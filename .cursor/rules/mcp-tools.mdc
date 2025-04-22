@@ -1,0 +1,65 @@
+---
+description: 当进行开发mcp工具时需要遵循的规则
+globs: 
+alwaysApply: false
+---
+# MCP工具集成指南
+
+Dify-Connect集成了多种MCP（Model Control Protocol）工具，用于扩展LLM的能力。以下是相关规则和指南：
+
+## 支持的MCP工具
+
+项目当前集成的MCP工具包括：
+
+1. **基础MCP工具**: 在 `src/utils/mcp_tool_implementations.py` 中实现
+2. **Playwright MCP**: 用于网页自动化和浏览器控制
+3. **Brave Search MCP**: 用于网络搜索功能
+
+## MCP工具初始化
+
+MCP工具在应用启动时通过 `lifespan` 函数进行初始化：
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 初始化MCP工具
+    setup_mcp_tools()
+    
+    # 初始化特定MCP工具
+    if playwright_settings.enabled:
+        await init_playwright_mcp()
+    
+    if brave_search_settings.enabled:
+        await init_brave_search_mcp()
+    
+    yield
+    
+    # 关闭特定MCP工具
+    if playwright_settings.enabled and playwright_settings.auto_close:
+        shutdown_playwright_mcp()
+    
+    if brave_search_settings.enabled and brave_search_settings.auto_close:
+        shutdown_brave_search_mcp()
+```
+
+## 工具配置
+
+- Playwright工具配置在 `src/config/playwright_config.py` 中定义
+- Brave Search工具配置在 `src/config/brave_search_config.py` 中定义
+- 配置通过环境变量进行控制
+
+## 添加新MCP工具的步骤
+
+1. 在 `src/utils/` 目录下创建工具实现模块
+2. 在 `src/config/` 中添加工具配置
+3. 在 `src/main.py` 的 `lifespan` 函数中添加初始化和关闭代码
+4. 创建相应的演示API端点（可选）
+
+## 演示端点
+
+项目为MCP工具提供了演示API端点：
+
+- Playwright演示: `src/api/endpoints/playwright_demo.py`
+- Brave Search演示: `src/api/endpoints/brave_search_demo.py`
+
+这些演示端点展示了如何在API中集成和使用MCP工具。

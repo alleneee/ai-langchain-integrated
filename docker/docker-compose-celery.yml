@@ -1,0 +1,56 @@
+# Docker Compose 配置文件，用于启动 Celery 异步文档处理服务
+# 使用方法：docker-compose -f docker/docker-compose-celery.yml up
+# 注意：所有依赖已包含在 requirements.txt 文件中
+
+version: '3'
+
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: python scripts/celery_worker.py
+    volumes:
+      - ..:/app
+    depends_on:
+      - redis
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_RESULT_DB=1
+    restart: unless-stopped
+
+  celery_flower:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: python scripts/celery_flower.py
+    ports:
+      - "5555:5555"
+    volumes:
+      - ..:/app
+    depends_on:
+      - redis
+      - celery_worker
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_RESULT_DB=1
+    restart: unless-stopped
+
+volumes:
+  redis_data:

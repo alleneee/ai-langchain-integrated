@@ -1,0 +1,65 @@
+---
+description: api设计规则和最佳实践标准
+globs: 
+alwaysApply: false
+---
+# API设计规则
+
+Dify-Connect项目中的API设计遵循以下规则和最佳实践：
+
+## API路由组织
+
+- 所有API路由都在 `src/api/router.py` 中集中注册
+- 具体实现分散在 `src/api/endpoints/` 目录下的不同模块中
+- 每个功能领域有自己的路由模块，如chat、completion、knowledge等
+
+## API端点命名约定
+
+- 端点使用RESTful风格设计
+- 路径使用小写单词，用连字符分隔
+- 集合资源用复数，如 `/chats`，单个资源用id标识，如 `/chats/{id}`
+
+## 请求/响应模型
+
+- 所有API请求和响应模型应使用Pydantic模型定义在 `src/schemas/` 目录下
+- 模型应包含适当的字段类型、验证规则和示例值
+- 模型应有明确的文档字符串说明
+
+## 依赖注入
+
+- 使用FastAPI的依赖注入系统管理依赖
+- 通用依赖项应定义在 `src/dependencies/` 目录下
+- 服务实例通过依赖注入提供给路由处理函数
+
+## 错误处理
+
+- 使用HTTP标准状态码表示请求结果
+- 通过异常处理中间件统一处理错误
+- 错误响应应包含错误代码、消息和详情
+
+## API版本控制
+
+- API版本通过URL前缀控制，如 `/api/v1/`
+- 主要版本变更应通过新的版本号标识，而不是修改现有API
+
+## 示例API结构
+
+```python
+@router.post("/chat/messages", response_model=ChatResponse)
+async def create_chat_message(
+    request: ChatRequest,
+    service: ChatService = Depends(get_chat_service)
+):
+    """创建新的聊天消息
+    
+    Args:
+        request: 聊天请求
+        service: 聊天服务实例
+        
+    Returns:
+        ChatResponse: 聊天响应
+    """
+    return await service.create_message(request)
+```
+
+遵循这些规则可以保持API的一致性、可维护性和可扩展性。

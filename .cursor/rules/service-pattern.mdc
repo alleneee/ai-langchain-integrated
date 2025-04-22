@@ -1,0 +1,99 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 服务层设计模式
+
+Dify-Connect 项目使用服务层模式来组织业务逻辑。以下是相关设计原则和规则：
+
+## 服务层责任
+
+- 服务层负责实现业务逻辑
+- 协调不同组件和资源
+- 处理数据转换和验证
+- 不应直接处理HTTP请求和响应
+
+## 服务类设计
+
+- 每个服务类应该有单一职责
+- 服务类应该是无状态的
+- 依赖应通过构造函数注入
+- 使用接口/抽象基类定义服务契约
+
+## 目录结构
+
+服务实现位于 `src/services/` 目录下，按功能领域组织：
+
+```
+src/services/
+  ├── chat_service.py        # 聊天相关服务
+  ├── knowledge_service.py   # 知识库服务
+  ├── llm/                   # LLM服务目录
+  │   ├── base.py            # 基础接口
+  │   ├── providers/         # 各提供商实现
+  │   └── langchain_service.py  # LangChain集成
+```
+
+## 服务接口示例
+
+```python
+class LLMService:
+    """LLM服务接口"""
+    
+    async def initialize(self):
+        """初始化服务"""
+        raise NotImplementedError
+    
+    async def chat_completion(
+        self, 
+        messages: List[Message], 
+        model: str, 
+        temperature: float = 0.7
+    ) -> ChatResponse:
+        """聊天补全"""
+        raise NotImplementedError
+    
+    async def text_completion(
+        self, 
+        prompt: str, 
+        model: str, 
+        temperature: float = 0.7
+    ) -> CompletionResponse:
+        """文本补全"""
+        raise NotImplementedError
+```
+
+## 服务初始化和依赖注入
+
+服务实例通过工厂创建并注入依赖：
+
+```python
+def get_llm_service() -> LLMService:
+    """获取LLM服务实例"""
+    return llm_service
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_completion(
+    request: ChatRequest,
+    service: LLMService = Depends(get_llm_service)
+):
+    """聊天补全API"""
+    return await service.chat_completion(
+        request.messages, 
+        request.model, 
+        request.temperature
+    )
+```
+
+## 异常处理
+
+- 服务层应该捕获和转换底层异常
+- 应该定义和抛出业务异常
+- 不应泄露底层实现细节到上层
+
+## 测试
+
+- 服务层应该有完整的单元测试
+- 使用mock替代外部依赖
+- 测试各种成功和失败场景

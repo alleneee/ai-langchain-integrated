@@ -1,0 +1,43 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Dify-Connect 项目结构
+
+Dify-Connect 是一个统一的LLM连接服务，支持多种LLM提供商和服务集成。项目遵循现代FastAPI应用程序的组织结构，以下是主要目录及其用途：
+
+## 核心目录结构
+
+- `src/` - 应用源代码
+  - `api/` - API路由和端点定义
+    - `endpoints/` - 各个API端点的具体实现
+  - `config/` - 配置管理
+  - `core/` - 核心功能
+  - `services/` - 服务实现层
+  - `utils/` - 工具函数
+  - `db/` - 数据库相关
+  - `models/` - 数据模型定义
+  - `schemas/` - Pydantic模型模式
+  - `crud/` - CRUD操作
+  - `middlewares/` - 中间件
+  - `dependencies/` - FastAPI依赖项
+  - `repositories/` - 数据存储库模式
+  - `factories/` - 工厂类
+  - `main.py` - 应用入口点
+
+## 主要入口点
+
+应用程序的主入口点是 [src/main.py](mdc:src/main.py)，它负责初始化和启动FastAPI应用。
+
+## API路由组织
+
+API路由在 [src/api/router.py](mdc:src/api/router.py) 中定义，按功能模块组织成不同的路由组。
+
+## 配置管理
+
+应用程序配置通过 `src/config/settings.py` 管理，使用环境变量进行配置。
+
+## 依赖管理
+
+项目使用 `requirements.txt` 或 Poetry 的 `pyproject.toml` 进行依赖管理。

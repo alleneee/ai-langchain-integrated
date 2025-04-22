@@ -1,0 +1,39 @@
+---
+description: 添加新的大模型厂商所遵循的规则
+globs: 
+alwaysApply: false
+---
+# LLM集成规则
+
+Dify-Connect支持多种LLM提供商的集成，遵循以下模式和规则：
+
+## LLM服务结构
+
+- LLM服务在 `src/api/endpoints/llm.py` 中提供API接口
+- 具体提供商实现应放在 `src/services/llm/providers/` 目录下
+- 每个提供商应实现统一的接口或协议
+
+## 集成新LLM提供商的步骤
+
+1. 在 `src/services/llm/providers/` 下创建新的提供商模块
+2. 实现标准接口方法（如chat、completion等）
+3. 在 `src/config/` 中添加相关配置
+4. 在工厂类中注册新的提供商
+
+## MCP工具集成
+
+项目集成了多种MCP工具：
+- Playwright MCP: 用于网页自动化
+- Brave Search MCP: 用于搜索功能
+
+这些工具在应用启动时通过 `lifespan` 函数进行初始化。
+
+## 配置模式
+
+LLM提供商配置应遵循以下格式：
+```python
+PROVIDER_API_KEY=your_api_key
+PROVIDER_API_BASE=provider_base_url
+```
+
+所有LLM提供商配置应在 `.env` 文件中定义，并通过 `src/config/settings.py` 加载。

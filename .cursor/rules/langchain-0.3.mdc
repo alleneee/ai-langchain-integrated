@@ -1,0 +1,24 @@
+---
+description: LangChain 0.3版本最佳实践指南
+globs: \n  - "src/utils/*.py"\n  - "src/services/llm/*.py"
+alwaysApply: true
+---
+# LangChain 0.3 最佳实践
+
+在Dify-Connect项目中使用LangChain 0.3版本时，应遵循以下最佳实践：
+
+## 导入规范
+
+LangChain 0.3版本更改了包结构，应使用新的导入路径：
+
+```python
+# 正确导入
+from langchain_core.tools import BaseTool, tool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+
+# 不再使用以下导入
+# from langchain.tools import BaseTool
+# from langchain.prompts import ChatPromptTemplate
+```
