@@ -1,11 +1,15 @@
 """
-LLM提供商适配器基类
+LLM Provider Base Module
 
-定义了所有LLM提供商适配器必须实现的接口
+Defines the abstract base classes and interfaces for LLM providers and strategies.
 """
 
-from abc import abstractmethod
-from typing import Dict, List, Any, Optional, AsyncGenerator
+from abc import ABC, abstractmethod
+from typing import Dict, List, Any, Optional, AsyncGenerator, Type
+
+# Assuming LLMProviderInterface defines the core methods expected by clients
+# If it doesn't exist or needs update, adjust accordingly.
+# Let's assume it exists for now.
 from src.core.interfaces import LLMProviderInterface
 from src.core.exceptions import (
     LLMProviderException, LLMProviderAuthException,
@@ -13,144 +17,161 @@ from src.core.exceptions import (
     LLMProviderModelNotFoundException
 )
 
-class BaseLLMProvider(LLMProviderInterface):
-    """LLM提供商基类"""
-    
-    def __init__(self, api_key: str = None, api_base: str = None, **kwargs):
-        """初始化LLM提供商
-        
-        Args:
-            api_key: API密钥
-            api_base: API基础URL
-            **kwargs: 其他参数
-        """
-        self.api_key = api_key
-        self.api_base = api_base
-        self.extra_kwargs = kwargs
-        self.provider_name = self.__class__.__name__
-    
+# +--------------------------------------------------------------------+
+# | LLM Interaction Strategy Interface                                 |
+# +--------------------------------------------------------------------+
+
+class LLMStrategy(ABC):
+    """Abstract base class for LLM interaction strategies (Langchain, Native API, etc.)."""
+
     @abstractmethod
-    async def generate_text(self, prompt: str, context: List[Dict], model: str, 
-                         temperature: float = 0.7, max_tokens: int = 1000) -> str:
-        """生成文本响应
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Returns:
-            str: 生成的文本
-            
-        Raises:
-            LLMProviderException: LLM提供商异常
-        """
+    async def generate_text_async(self, prompt: str, context: List[Dict], model: str,
+                               temperature: float, max_tokens: int, **kwargs) -> str:
+        """Generates a text response asynchronously."""
         pass
-    
+
     @abstractmethod
-    async def generate_embeddings(self, texts: List[str], model: str = None) -> List[List[float]]:
-        """生成文本嵌入向量
-        
-        Args:
-            texts: 文本列表
-            model: 嵌入模型名称
-            
-        Returns:
-            List[List[float]]: 嵌入向量列表
-            
-        Raises:
-            LLMProviderException: LLM提供商异常
-        """
+    async def generate_embeddings_async(self, texts: List[str], model: Optional[str] = None, **kwargs) -> List[List[float]]:
+        """Generates text embeddings asynchronously."""
         pass
-    
+
     @abstractmethod
-    async def count_tokens(self, text: str, model: str = None) -> Dict[str, int]:
-        """计算文本的token数量
-        
-        Args:
-            text: 待计算的文本
-            model: 模型名称
-            
-        Returns:
-            Dict[str, int]: 包含token数量和字符数量的字典
-            
-        Raises:
-            LLMProviderException: LLM提供商异常
-        """
+    async def count_tokens_async(self, text: str, model: Optional[str] = None, **kwargs) -> Dict[str, int]:
+        """Counts tokens in the text asynchronously."""
         pass
-    
+
     @abstractmethod
+    async def stream_chat_async(self, prompt: str, context: List[Dict], model: str,
+                             temperature: float, max_tokens: int, **kwargs) -> AsyncGenerator[str, None]:
+        """Streams chat responses asynchronously."""
+        # Required for abstract async generator
+        if False:
+            yield
+        pass
+
+    @abstractmethod
+    def get_models(self) -> List[str]:
+        """Gets the list of supported models for this strategy/provider."""
+        pass
+
+# +--------------------------------------------------------------------+
+# | Abstract LLM Provider                                              |
+# +--------------------------------------------------------------------+
+
+# Rename BaseLLMProvider to AbstractLLMProvider
+class AbstractLLMProvider(LLMProviderInterface, ABC):
+    """
+    Abstract base class for LLM Providers.
+    Delegates core LLM operations to an injected LLMStrategy.
+    Ensures a consistent interface for clients.
+    """
+    strategy: LLMStrategy
+    provider_name: str
+
+    def __init__(self, strategy: LLMStrategy):
+        """
+        Initializes the provider with a specific interaction strategy.
+
+        Args:
+            strategy: The LLMStrategy instance to use for LLM operations.
+        """
+        if not isinstance(strategy, LLMStrategy):
+            raise TypeError("strategy must be an instance of LLMStrategy")
+        self.strategy = strategy
+        # Derive provider name from class name by default
+        # Can be overridden by concrete class or factory if needed
+        self.provider_name = self.__class__.__name__.replace("Provider", "")
+
+    async def generate_text(self, prompt: str, context: List[Dict], model: str,
+                         temperature: float = 0.7, max_tokens: int = 1000, **kwargs) -> str:
+        """Generates a text response by delegating to the strategy."""
+        return await self.strategy.generate_text_async(
+            prompt=prompt, context=context, model=model,
+            temperature=temperature, max_tokens=max_tokens, **kwargs
+        )
+
+    async def generate_embeddings(self, texts: List[str], model: Optional[str] = None, **kwargs) -> List[List[float]]:
+        """Generates text embeddings by delegating to the strategy."""
+        return await self.strategy.generate_embeddings_async(
+            texts=texts, model=model, **kwargs
+        )
+
+    async def count_tokens(self, text: str, model: Optional[str] = None, **kwargs) -> Dict[str, int]:
+        """Counts tokens by delegating to the strategy."""
+        # Note: The original base class had an abstract count_tokens.
+        # The strategy now handles this. Ensure the interface matches.
+        return await self.strategy.count_tokens_async(
+            text=text, model=model, **kwargs
+        )
+
     async def stream_chat(self, prompt: str, context: List[Dict], model: str,
-                       temperature: float = 0.7, max_tokens: int = 1000) -> AsyncGenerator[str, None]:
-        """流式生成聊天回复
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Yields:
-            str: 生成的文本片段
-            
-        Raises:
-            LLMProviderException: LLM提供商异常
-        """
-        pass
-    
-    def _validate_api_key(self):
-        """验证API密钥是否有效
-        
-        Raises:
-            LLMProviderAuthException: API密钥无效时抛出异常
-        """
-        if not self.api_key:
-            raise LLMProviderAuthException(f"{self.provider_name} API密钥未设置")
-    
-    def _get_model_defaults(self, model: str, task_type: str = "chat") -> Dict[str, Any]:
-        """获取模型默认参数
-        
-        Args:
-            model: 模型名称
-            task_type: 任务类型，可选值：chat, completion, embedding
-            
-        Returns:
-            Dict[str, Any]: 模型默认参数
-        """
-        # 这里子类可以覆盖以提供特定模型的默认参数
-        return {
-            "temperature": 0.7,
-            "max_tokens": 1000 if task_type == "chat" else 16 if task_type == "embedding" else 500,
-            "top_p": 1.0,
-            "frequency_penalty": 0.0,
-            "presence_penalty": 0.0
-        }
-    
+                       temperature: float = 0.7, max_tokens: int = 1000, **kwargs) -> AsyncGenerator[str, None]:
+        """Streams chat responses by delegating to the strategy."""
+        async for chunk in self.strategy.stream_chat_async(
+            prompt=prompt, context=context, model=model,
+            temperature=temperature, max_tokens=max_tokens, **kwargs
+        ):
+            yield chunk
+
+    def get_models(self) -> List[str]:
+        """Gets the list of supported models by delegating to the strategy."""
+        return self.strategy.get_models()
+
+    # --- Utility methods (can be kept if generic enough, or moved to utils) ---
+    # These methods might be better placed in a utility module or within specific strategies
+    # if they are not universally applicable or needed by the provider itself.
+
     def _prepare_messages(self, context: List[Dict], prompt: str = None) -> List[Dict[str, str]]:
-        """将上下文和提示转换为标准消息格式
-        
-        Args:
-            context: 上下文消息列表
-            prompt: 当前提示
-            
-        Returns:
-            List[Dict[str, str]]: 标准格式的消息列表
+        """
+        Helper to convert context and prompt into a standard message format.
+        This might be useful for strategies, or strategies might have their own formatters.
+        Consider moving to a dedicated utility module if used across multiple strategies.
         """
         messages = []
-        
-        # 添加上下文消息
         if context:
             for msg in context:
-                role = msg.get("role", "user")
+                role = msg.get("role", "user") # Default to user if role is missing
                 content = msg.get("content", "")
+                # Basic validation: only add if role and content are present
                 if role and content:
-                    messages.append({"role": role, "content": content})
-        
-        # 添加当前提示作为用户消息
-        if prompt and (not context or context[-1]["role"] != "user"):
-            messages.append({"role": "user", "content": prompt})
-        
+                    # Standardize common roles if needed (e.g., 'assistant' vs 'ai')
+                    standard_role = role.lower()
+                    messages.append({"role": standard_role, "content": content})
+
+        # Add the current prompt as the last user message
+        if prompt:
+             messages.append({"role": "user", "content": prompt})
+
         return messages
+
+    # Methods like _validate_api_key and _get_model_defaults are strategy-specific
+    # and should be implemented within the concrete strategy classes, not here.
+
+# +--------------------------------------------------------------------+
+# | Provider Registration (Keep if used by factory)                    |
+# +--------------------------------------------------------------------+
+
+_providers: Dict[str, Type[AbstractLLMProvider]] = {}
+
+def register_provider(name: str):
+    """Decorator to register LLM provider classes."""
+    def decorator(cls):
+        if not issubclass(cls, AbstractLLMProvider):
+             raise TypeError(f"{cls.__name__} must inherit from AbstractLLMProvider")
+        _providers[name] = cls
+        # print(f"Registered provider: {name} -> {cls.__name__}") # Optional: for debugging
+        return cls
+    return decorator
+
+def get_provider_cls(name: str) -> Type[AbstractLLMProvider]:
+    """Gets the registered provider class by name."""
+    cls = _providers.get(name)
+    if cls is None:
+        # Consider trying to dynamically import if not found?
+        # Example: Dynamically import src.services.llm.{name}_provider.{ProviderName}
+        raise ValueError(f"Unknown or unregistered provider: {name}. Available: {list(_providers.keys())}")
+    return cls
+
+def get_available_providers() -> List[str]:
+    """Returns a list of names of registered providers."""
+    return list(_providers.keys())

@@ -26,6 +26,10 @@ from src.api.endpoints.mcp_demo import router as mcp_demo_router
 from src.api.endpoints.documents import router as documents_router
 # 导入异步文档处理路由
 from src.api.endpoints.documents_async import router as documents_async_router
+# 导入向量知识库路由
+from src.api.endpoints.vector_knowledge import router as vector_knowledge_router
+# 导入异步向量知识库路由
+from src.api.endpoints.vector_knowledge_async import router as vector_knowledge_async_router
 
 # 创建主API路由器
 api_router = APIRouter()
@@ -49,3 +53,7 @@ api_router.include_router(mcp_demo_router, prefix="/mcp", tags=["MCP 工具"])
 api_router.include_router(documents_router, prefix="/documents", tags=["文档处理"])
 # 添加异步文档处理路由
 api_router.include_router(documents_async_router, prefix="/documents/async", tags=["异步文档处理"])
+# 添加向量知识库路由
+api_router.include_router(vector_knowledge_router, prefix="/vector-kb", tags=["向量知识库"])
+# 添加异步向量知识库路由
+api_router.include_router(vector_knowledge_async_router, prefix="/vector-kb/async", tags=["异步向量知识库"])
