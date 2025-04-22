@@ -14,6 +14,7 @@ from src.core.exceptions import (
     LLMProviderException, LLMProviderAuthException,
     LLMProviderModelNotFoundException
 )
+from src.utils.llm_utils import handle_llm_exception
 
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI API适配器"""
@@ -64,17 +65,20 @@ class OpenAIProvider(BaseLLMProvider):
         try:
             messages = self._prepare_messages(context, prompt)
             
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            async def _generate():
+                response = await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                if response.choices and len(response.choices) > 0:
+                    return response.choices[0].message.content
+                
+                return ""
             
-            if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content
-            
-            return ""
+            return await handle_llm_exception(_generate)
         except Exception as e:
             raise self._format_exception(e)
     
@@ -95,13 +99,16 @@ class OpenAIProvider(BaseLLMProvider):
             if not model:
                 model = "text-embedding-3-small"
             
-            response = await self.client.embeddings.create(
-                model=model,
-                input=texts
-            )
+            async def _embed():
+                response = await self.client.embeddings.create(
+                    model=model,
+                    input=texts
+                )
+                
+                embeddings = [data.embedding for data in response.data]
+                return embeddings
             
-            embeddings = [data.embedding for data in response.data]
-            return embeddings
+            return await handle_llm_exception(_embed)
         except Exception as e:
             raise self._format_exception(e)
     
@@ -170,17 +177,21 @@ class OpenAIProvider(BaseLLMProvider):
         try:
             messages = self._prepare_messages(context, prompt)
             
-            stream = await self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True
-            )
+            async def _stream():
+                stream = await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+                
+                async for chunk in stream:
+                    if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
             
-            async for chunk in stream:
-                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+            async for chunk in await handle_llm_exception(_stream):
+                yield chunk
         except Exception as e:
             raise self._format_exception(e)
             

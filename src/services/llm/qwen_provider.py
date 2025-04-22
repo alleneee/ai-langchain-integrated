@@ -6,273 +6,200 @@
 
 import json
 import tiktoken
-from typing import Dict, List, Any, Optional, AsyncGenerator
-from src.services.llm.base import BaseLLMProvider
-from src.core.exceptions import (
-    LLMProviderException, LLMProviderAuthException,
-    LLMProviderModelNotFoundException
-)
-import dashscope
-from dashscope import Generation
 import asyncio
+from typing import Dict, List, Any, Optional, AsyncGenerator
+
+from src.services.llm.base import BaseLLMProvider
+from src.utils.llm_exception_utils import handle_llm_exception
+from src.utils.async_utils import run_sync_in_executor
+
+# Dashscope SDK
+import dashscope
+from dashscope import Generation, TextEmbedding
 
 class QwenProvider(BaseLLMProvider):
     """通义千问 API适配器"""
     
     def __init__(self, api_key: str = None, api_base: str = None, **kwargs):
-        """初始化通义千问适配器
-        
-        Args:
-            api_key: 通义千问 API密钥
-            api_base: 自定义API基础URL (通常不需要)
-            **kwargs: 其他参数
-        """
+        """初始化通义千问适配器"""
         super().__init__(api_key, api_base, **kwargs)
-        self._setup_client()
-    
-    def _setup_client(self):
-        """设置通义千问客户端"""
+        # Dashscope SDK 使用全局 API key，在 setup 中设置
         try:
-            self._validate_api_key()
-            # 设置DashScope API密钥
-            dashscope.api_key = self.api_key
-            # 不需要创建客户端实例，dashscope使用全局API密钥
+            self._setup_client()
+            self.client_ready = True
         except Exception as e:
-            raise self._format_exception(e)
-    
+            handle_llm_exception(e, self.provider_name)
+            self.client_ready = False
+
+    def _setup_client(self):
+        """设置通义千问客户端 (实际是设置全局 API Key)"""
+        self._validate_api_key() # 验证 key 是否存在
+        # 设置DashScope API密钥
+        dashscope.api_key = self.api_key
+        # 可以在这里添加一个简单的测试调用来验证 API Key 的有效性 (可选)
+        # try:
+        #     # Example: Make a simple call to test connectivity/auth
+        #     Generation.call(model='qwen-turbo', prompt='Test Connection', max_tokens=1)
+        # except Exception as setup_e:
+        #     raise LLMAuthenticationError(f"Failed to validate Qwen API key: {setup_e}") from setup_e
+
+    def _ensure_client_ready(self):
+        if not self.client_ready:
+            raise RuntimeError(f"{self.provider_name} client failed to initialize or API key is invalid. Check configuration and logs.")
+
     async def generate_text(self, prompt: str, context: List[Dict], model: str,
                          temperature: float = 0.7, max_tokens: int = 1000) -> str:
-        """生成文本响应
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称，如qwen-turbo、qwen-plus等
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Returns:
-            str: 生成的文本
-            
-        Raises:
-            LLMProviderException: 通义千问 API调用异常
-        """
+        """生成文本响应"""
+        self._ensure_client_ready()
         try:
             messages = self._prepare_messages(context, prompt)
+            dashscope_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
             
-            # 转换为dashscope格式的消息
-            dashscope_messages = []
-            for msg in messages:
-                dashscope_messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+            # 定义要传递给 Generation.call 的参数
+            call_args = {                
+                "model": model,
+                "messages": dashscope_messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "result_format": 'message', # 确保返回 message 结构
+            }
             
-            # DashScope API是同步的，使用run_in_executor运行
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: Generation.call(
-                    model=model,
-                    messages=dashscope_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-            )
+            # 使用 run_sync_in_executor 运行同步 DashScope API
+            response = await run_sync_in_executor(Generation.call, **call_args)
             
             # 检查响应
             if response.status_code == 200:
                 if response.output and response.output.choices and len(response.output.choices) > 0:
                     return response.output.choices[0].message.content
-            
-            # 如果响应不成功，抛出异常
-            if response.status_code != 200:
-                raise Exception(f"通义千问API调用失败: {response.code} - {response.message}")
-            
-            return ""
+                else:
+                    raise RuntimeError("Qwen API response format unexpected (no output or choices)")
+            else:
+                # Dashscope SDK 应该在失败时抛出异常，但以防万一
+                # 创建一个模拟的异常对象，传递信息给 handle_llm_exception
+                simulated_exc = Exception(f"Qwen API Error: Code {response.code}, Message: {response.message}")
+                setattr(simulated_exc, 'status_code', response.status_code) 
+                setattr(simulated_exc, 'response', response) # 附加完整响应供调试
+                raise simulated_exc
+
         except Exception as e:
-            raise self._format_exception(e)
+            handle_llm_exception(e, self.provider_name)
     
     async def generate_embeddings(self, texts: List[str], model: str = None) -> List[List[float]]:
-        """生成文本嵌入向量
-        
-        Args:
-            texts: 文本列表
-            model: 嵌入模型名称，默认为text-embedding-v1
-            
-        Returns:
-            List[List[float]]: 嵌入向量列表
-            
-        Raises:
-            LLMProviderException: 通义千问 API调用异常
-        """
+        """生成文本嵌入向量"""
+        self._ensure_client_ready()
+        embedding_model_name = model if model else "text-embedding-v1"
         try:
-            from dashscope import TextEmbedding
+            # 定义要传递给 TextEmbedding.call 的参数
+            call_args = {
+                "model": embedding_model_name,
+                "input": texts,
+                "text_type": "document" # 或 "query"，取决于用途
+            }
+
+            # 使用 run_sync_in_executor 运行同步 DashScope API
+            response = await run_sync_in_executor(TextEmbedding.call, **call_args)
             
-            if not model:
-                model = "text-embedding-v1"
-            
-            # DashScope API是同步的，使用run_in_executor运行
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: TextEmbedding.call(
-                    model=model,
-                    input=texts
-                )
-            )
-            
-            # 检查响应
-            if response.status_code == 200 and response.output and response.output.embeddings:
-                embeddings = [data.embedding for data in response.output.embeddings]
-                return embeddings
-            
-            # 如果响应不成功，抛出异常
-            if response.status_code != 200:
-                raise Exception(f"通义千问嵌入API调用失败: {response.code} - {response.message}")
-            
-            return []
+            if response.status_code == 200:
+                if response.output and response.output.embeddings:
+                    return [item.embedding for item in response.output.embeddings]
+                else:
+                    raise RuntimeError("Qwen API embedding response format unexpected (no output or embeddings)")
+            else:
+                simulated_exc = Exception(f"Qwen Embedding API Error: Code {response.code}, Message: {response.message}")
+                setattr(simulated_exc, 'status_code', response.status_code)
+                setattr(simulated_exc, 'response', response)
+                raise simulated_exc
+
         except Exception as e:
-            raise self._format_exception(e)
-    
+            handle_llm_exception(e, self.provider_name)
+
     async def count_tokens(self, text: str, model: str = None) -> Dict[str, int]:
-        """计算文本的token数量
-        
-        Args:
-            text: 待计算的文本
-            model: 模型名称
-            
-        Returns:
-            Dict[str, int]: 包含token数量和字符数量的字典
-            
-        Raises:
-            LLMProviderException: 计算token异常
-        """
+        """计算文本的token数量"""
+        # Qwen 使用 cl100k_base 编码器
         try:
-            from dashscope import TextEmbedding
-            
-            # 对于中文英文混合文本，使用cl100k_base
-            encoding = tiktoken.get_encoding("cl100k_base")
-            
-            # 计算token
-            tokens = encoding.encode(text)
+            # 使用 run_sync_in_executor 包装同步调用
+            encoding = await run_sync_in_executor(tiktoken.get_encoding, "cl100k_base")
+            tokens = await run_sync_in_executor(encoding.encode, text)
             token_count = len(tokens)
-            
-            return {
-                "token_count": token_count,
-                "character_count": len(text)
-            }
+            char_count = len(text)
+            return {"token_count": token_count, "char_count": char_count}
         except Exception as e:
-            # 如果tiktoken出现问题，使用近似计算
-            return {
-                "token_count": len(text) // 4,  # 粗略估计每个token约4个字符
-                "character_count": len(text)
-            }
-    
+             # tiktoken 本身可能出错
+            handle_llm_exception(e, f"{self.provider_name} (tiktoken)")
+
     async def stream_chat(self, prompt: str, context: List[Dict], model: str,
                        temperature: float = 0.7, max_tokens: int = 1000) -> AsyncGenerator[str, None]:
-        """流式生成聊天回复
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Yields:
-            str: 生成的文本片段
-            
-        Raises:
-            LLMProviderException: 通义千问 API调用异常
-        """
+        """流式生成聊天回复"""
+        self._ensure_client_ready()
         try:
             messages = self._prepare_messages(context, prompt)
+            dashscope_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+
+            call_args = {
+                "model": model,
+                "messages": dashscope_messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "result_format": 'message',
+                "stream": True,
+                "incremental_output": True # 获取增量输出
+            }
+
+            # 使用 run_sync_in_executor 来获取同步迭代器
+            response_iter = await run_sync_in_executor(Generation.call, **call_args)
             
-            # 转换为dashscope格式的消息
-            dashscope_messages = []
-            for msg in messages:
-                dashscope_messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-            
-            # 使用异步生成器包装同步流式响应
-            async def stream_response():
-                # DashScope API是同步的，使用run_in_executor运行
-                loop = asyncio.get_event_loop()
-                
-                def get_stream_response():
-                    # 使用stream=True启用流式响应
-                    return Generation.call(
-                        model=model,
-                        messages=dashscope_messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        result_format='message',
-                        stream=True
-                    )
-                
-                # 由于DashScope流式API返回一个迭代器，我们需要手动迭代它
-                response_iter = await loop.run_in_executor(None, get_stream_response)
-                
-                # 手动迭代同步响应
-                for event in response_iter:
+            # 异步迭代同步迭代器
+            # 这个模式有点奇怪，但对于包装同步生成器是必要的
+            # 更好的方法是库本身提供异步接口
+            iter_ended = False
+            while not iter_ended:
+                try:
+                    # 在执行器中运行 next(iterator)
+                    event = await run_sync_in_executor(next, response_iter)
                     if event.status_code == 200:
                         if event.output and event.output.choices and len(event.output.choices) > 0:
                             content = event.output.choices[0].message.content
-                            if content:
+                            if content: # 只 yield 非空内容
                                 yield content
                     else:
-                        # 如果发生错误，打印错误信息并停止
-                        raise Exception(f"通义千问流式API调用失败: {event.code} - {event.message}")
-            
-            # 返回异步生成器
-            async for chunk in stream_response():
-                yield chunk
-                
+                        # 如果流内部出错，也模拟异常抛出
+                        simulated_exc = Exception(f"Qwen Streaming API Error: Code {event.code}, Message: {event.message}")
+                        setattr(simulated_exc, 'status_code', event.status_code)
+                        setattr(simulated_exc, 'response', event)
+                        raise simulated_exc
+                except StopIteration:
+                    iter_ended = True # 迭代器正常结束
+                except Exception as inner_e: 
+                    # 捕获 next() 或流处理中的错误，并使用主处理器
+                    # 避免下面再次捕获
+                    handle_llm_exception(inner_e, self.provider_name)
+                    iter_ended = True # 出错则停止迭代
+                    
         except Exception as e:
-            raise self._format_exception(e)
+            # 捕获 setup 或 run_sync_in_executor(Generation.call) 本身的错误
+            handle_llm_exception(e, self.provider_name)
             
     def _get_model_defaults(self, model: str, task_type: str = "chat") -> Dict[str, Any]:
-        """获取模型默认参数
-        
-        Args:
-            model: 模型名称
-            task_type: 任务类型
-            
-        Returns:
-            Dict[str, Any]: 模型默认参数
-        """
+        """获取模型默认参数 (保持不变)"""
         if task_type == "embedding":
             return {
-                "max_tokens": 8192,
+                "max_tokens": 2048, # text-embedding-v1 max length
             }
         
-        # 通义千问模型默认参数
+        # 通义千问模型默认参数 (根据官方文档或最佳实践调整)
+        defaults = {
+            "temperature": 0.85, # Qwen 推荐
+            "top_p": 0.8,      # Qwen 推荐
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0
+        }
         if "qwen-turbo" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 1500,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
+            defaults["max_tokens"] = 6000 # 根据模型调整
         elif "qwen-plus" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 2000,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
-        elif "qwen-max" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 4000,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
+            defaults["max_tokens"] = 6000
+        elif "qwen-max" in model or "qwen-long" in model:
+             defaults["max_tokens"] = 6000 # 检查具体模型限制
         else:
             return super()._get_model_defaults(model, task_type)
+        
+        return defaults

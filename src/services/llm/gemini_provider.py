@@ -6,488 +6,394 @@ Google Gemini LLM提供商适配器
 
 import json
 import tiktoken
-from typing import Dict, List, Any, Optional, AsyncGenerator
-from src.services.llm.base import BaseLLMProvider
-from src.core.exceptions import (
-    LLMProviderException, LLMProviderAuthException,
-    LLMProviderModelNotFoundException
-)
 import asyncio
+from typing import Dict, List, Any, Optional, AsyncGenerator
+
+from src.services.llm.base import BaseLLMProvider
+from src.utils.llm_exception_utils import handle_llm_exception
+from src.utils.async_utils import run_sync_in_executor
+
+# Potential imports - will be used conditionally
+try:
+    from langchain_google_community import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+
+try:
+    import google.generativeai as genai
+    SDK_AVAILABLE = True
+except ImportError:
+    SDK_AVAILABLE = False
 
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini API适配器"""
     
     def __init__(self, api_key: str = None, api_base: str = None, **kwargs):
-        """初始化Gemini适配器
-        
-        Args:
-            api_key: Google API密钥
-            api_base: 自定义API基础URL (通常不需要)
-            **kwargs: 其他参数
-        """
+        """初始化Gemini适配器"""
         super().__init__(api_key, api_base, **kwargs)
-        self._setup_client()
-    
-    def _setup_client(self):
-        """设置Gemini客户端"""
+        self.genai = None
+        self.chat_model_cls = None
+        self.embedding_model_cls = None
+        self.use_langchain = False
+        self.client_ready = False
         try:
-            self._validate_api_key()
-            
-            # 尝试导入langchain-google-community
-            try:
-                from langchain_google_community import ChatGoogleGenerativeAI
-                self.chat_model_cls = ChatGoogleGenerativeAI
-                self.use_langchain = True
-            except ImportError:
-                # 回退到使用Google GenerativeAI SDK
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self.genai = genai
-                self.use_langchain = False
+            self._setup_client()
+            self.client_ready = True
         except Exception as e:
-            raise self._format_exception(e)
-    
+            handle_llm_exception(e, self.provider_name)
+            # Keep client_ready as False
+
+    def _setup_client(self):
+        """设置Gemini客户端 (Langchain 或 SDK)"""
+        self._validate_api_key() # Will raise if key is missing
+            
+        if LANGCHAIN_AVAILABLE:
+            self.chat_model_cls = ChatGoogleGenerativeAI
+            self.embedding_model_cls = GoogleGenerativeAIEmbeddings
+            self.use_langchain = True
+            print("GeminiProvider: Using Langchain integration.")
+            # Langchain lazy loads the connection, setup is minimal here.
+            # Validation happens on first call.
+        elif SDK_AVAILABLE:
+            print("GeminiProvider: Langchain-google-community not found, falling back to google-generativeai SDK.")
+            # Configure the SDK globally (as recommended by google-generativeai)
+            try:
+                genai.configure(api_key=self.api_key)
+                self.genai = genai 
+                self.use_langchain = False
+                # Test connection (optional but recommended)
+                # list_models call is relatively lightweight
+                list(self.genai.list_models())
+            except Exception as sdk_e:
+                 # Catch configuration or initial connection errors
+                 raise RuntimeError(f"Failed to configure or connect using google-generativeai SDK: {sdk_e}") from sdk_e
+        else:
+            raise ImportError("Neither langchain-google-community nor google-generativeai library is installed. Please install one.")
+
+    def _ensure_client_ready(self):
+        if not self.client_ready:
+             raise RuntimeError(f"{self.provider_name} client failed to initialize. Check configuration, API key, and installed libraries.")
+
     async def generate_text(self, prompt: str, context: List[Dict], model: str,
                          temperature: float = 0.7, max_tokens: int = 1000) -> str:
-        """生成文本响应
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称，如gemini-pro或gemini-ultra
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Returns:
-            str: 生成的文本
-            
-        Raises:
-            LLMProviderException: Gemini API调用异常
-        """
+        """生成文本响应"""
+        self._ensure_client_ready()
         try:
-            if self.use_langchain:
-                # 使用LangChain集成
+            if self.use_langchain and self.chat_model_cls:
+                # --- LangChain Implementation ---
                 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
                 
-                # 转换为LangChain消息
                 messages = []
                 for msg in context:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
-                    
-                    if role == "user":
-                        messages.append(HumanMessage(content=content))
-                    elif role == "assistant":
-                        messages.append(AIMessage(content=content))
-                    elif role == "system":
-                        messages.append(SystemMessage(content=content))
+                    # Gemini Langchain converts System message if needed
+                    if role == "user": messages.append(HumanMessage(content=content))
+                    elif role == "assistant": messages.append(AIMessage(content=content))
+                    elif role == "system": messages.append(SystemMessage(content=content))
+                if prompt: messages.append(HumanMessage(content=prompt))
                 
-                # 添加当前提示
-                if prompt:
-                    messages.append(HumanMessage(content=prompt))
-                
-                # 创建LangChain模型
                 chat_model = self.chat_model_cls(
                     model=model,
                     google_api_key=self.api_key,
                     temperature=temperature,
                     max_output_tokens=max_tokens,
-                    convert_system_message_to_human=True  # Gemini不直接支持系统消息
+                    convert_system_message_to_human=True 
                 )
                 
-                # 调用模型
-                response = await asyncio.to_thread(chat_model.invoke, messages)
+                # Use run_sync_in_executor for the synchronous invoke call
+                response = await run_sync_in_executor(chat_model.invoke, messages)
                 
-                # 提取响应内容
-                if hasattr(response, "content"):
-                    return response.content
-                else:
-                    return str(response)
-            else:
-                # 使用Google GenerativeAI SDK
-                
-                # 转换为Gemini格式的聊天历史
+                if hasattr(response, "content"): return response.content
+                else: return str(response)
+
+            elif not self.use_langchain and self.genai:
+                # --- Google GenerativeAI SDK Implementation ---
                 gemini_history = []
-                user_msgs = []
-                
+                current_user_message_parts = []
+
+                # Process context into Gemini format (alternating user/model)
+                last_role = None
                 for msg in context:
-                    role = msg.get("role", "")
+                    role = msg.get("role")
                     content = msg.get("content", "")
+                    if not role or not content:
+                        continue
                     
-                    if role == "system":
-                        # Gemini不支持系统消息，将其添加为用户消息
-                        user_msgs.append(content)
-                    elif role == "user":
-                        user_msgs.append(content)
-                    elif role == "assistant" and user_msgs:
-                        # 添加用户消息和助手回复作为一对
-                        gemini_history.append({
-                            "role": "user", 
-                            "parts": ["\n".join(user_msgs)]
-                        })
-                        user_msgs = []
-                        gemini_history.append({
-                            "role": "model",
-                            "parts": [content]
-                        })
-                
-                # 添加最后的用户消息
-                if user_msgs or prompt:
-                    final_user_msg = "\n".join(user_msgs + ([prompt] if prompt else []))
-                    if final_user_msg:
-                        if gemini_history:
-                            gemini_history.append({"role": "user", "parts": [final_user_msg]})
+                    # Combine consecutive user messages
+                    if role == "user":
+                        if last_role == "user":
+                            current_user_message_parts.append(content)
                         else:
-                            # 如果没有历史，直接使用提示
-                            final_prompt = final_user_msg
-                
-                # 使用Gemini Chat API
-                if gemini_history:
-                    # 使用聊天历史
-                    chat = await asyncio.to_thread(
-                        lambda: self.genai.GenerativeModel(model).start_chat(history=gemini_history)
-                    )
+                            current_user_message_parts = [content]
+                    elif role == "assistant": # 'model' in gemini terms
+                        # Finalize previous user message block if it exists
+                        if current_user_message_parts:
+                            gemini_history.append({"role": "user", "parts": ["\n".join(current_user_message_parts)]})
+                            current_user_message_parts = []
+                        gemini_history.append({"role": "model", "parts": [content]})
                     
-                    response = await asyncio.to_thread(
-                        lambda: chat.send_message(
-                            "",  # 空消息，因为最后的用户消息已经在历史中
-                            generation_config={
-                                "temperature": temperature,
-                                "max_output_tokens": max_tokens,
-                            }
-                        )
+                    last_role = role
+
+                # Add the final prompt to the last user message block or as a new one
+                if prompt:
+                     if last_role == "user":
+                         current_user_message_parts.append(prompt)
+                     else:
+                         current_user_message_parts = [prompt]
+                
+                # Prepare generation config
+                generation_config = self.genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens
+                )
+                
+                # Get the model instance (synchronous)
+                model_instance = self.genai.GenerativeModel(model)
+                
+                # Call generate_content (synchronous)
+                if gemini_history:
+                    # Start chat and send message
+                    chat = await run_sync_in_executor(model_instance.start_chat, history=gemini_history)
+                    response = await run_sync_in_executor(
+                        chat.send_message,
+                        final_user_msg,
+                        generation_config=generation_config
                     )
                 else:
-                    # 没有历史，直接使用提示
-                    model_instance = await asyncio.to_thread(
-                        lambda: self.genai.GenerativeModel(model)
-                    )
-                    
-                    response = await asyncio.to_thread(
-                        lambda: model_instance.generate_content(
-                            prompt,
-                            generation_config={
-                                "temperature": temperature,
-                                "max_output_tokens": max_tokens,
-                            }
-                        )
+                     # No history, just generate from prompt
+                    response = await run_sync_in_executor(
+                        model_instance.generate_content, 
+                        final_user_msg, 
+                        generation_config=generation_config
                     )
                 
-                # 提取文本内容
-                return response.text
+                # Extract text
+                if response and hasattr(response, 'text'):
+                    return response.text
+                else:
+                    # Handle cases where response might be blocked or empty
+                    # Check for safety ratings or prompt feedback if needed
+                    if response and hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+                         raise RuntimeError(f"Gemini API request blocked due to: {response.prompt_feedback.block_reason}")
+                    raise RuntimeError("Gemini API response format unexpected or empty.")
+            else:
+                 raise RuntimeError(f"{self.provider_name} client not properly configured or libraries missing.")
         except Exception as e:
-            raise self._format_exception(e)
+            handle_llm_exception(e, self.provider_name)
     
     async def generate_embeddings(self, texts: List[str], model: str = None) -> List[List[float]]:
-        """生成文本嵌入向量
-        
-        Args:
-            texts: 文本列表
-            model: 嵌入模型名称，默认为embedding-001
-            
-        Returns:
-            List[List[float]]: 嵌入向量列表
-            
-        Raises:
-            LLMProviderException: Gemini API调用异常
-        """
+        """生成文本嵌入向量"""
+        self._ensure_client_ready()
+        embedding_model_name = model if model else "models/embedding-001" # Default Gemini embedding model
         try:
-            if not model:
-                model = "embedding-001"
-            
-            if self.use_langchain:
-                # 使用LangChain集成
-                from langchain_google_community import GoogleGenerativeAIEmbeddings
-                
-                embedding_model = GoogleGenerativeAIEmbeddings(
-                    model=model,
+            if self.use_langchain and self.embedding_model_cls:
+                 # --- LangChain Implementation ---
+                embedding_model = self.embedding_model_cls(
+                    model_name=embedding_model_name, # Langchain uses model_name
                     google_api_key=self.api_key
+                    # task_type can be specified if needed, default is RETRIEVAL_DOCUMENT
                 )
-                
-                # 使用LangChain嵌入
-                embeddings = await asyncio.to_thread(embedding_model.embed_documents, texts)
+                # Use run_sync_in_executor for the synchronous embed_documents call
+                embeddings = await run_sync_in_executor(embedding_model.embed_documents, texts)
                 return embeddings
+            
+            elif not self.use_langchain and self.genai:
+                 # --- Google GenerativeAI SDK Implementation ---
+                 # SDK's embed_content handles batching implicitly up to limits
+                 # task_type: 'RETRIEVAL_QUERY', 'RETRIEVAL_DOCUMENT', 'SEMANTIC_SIMILARITY', 'CLASSIFICATION', 'CLUSTERING'
+                 # Assuming 'RETRIEVAL_DOCUMENT' as a general default
+                 response = await run_sync_in_executor(
+                     self.genai.embed_content, 
+                     model=embedding_model_name,
+                     content=texts,
+                     task_type="RETRIEVAL_DOCUMENT"
+                 )
+                 
+                 if response and 'embedding' in response:
+                     # If single text, response['embedding'] is the list
+                     # If multiple texts, response['embedding'] is a list of lists -> WRONG, SDK returns list of lists
+                     # Let's check structure carefully based on SDK docs (it should return list of lists for multiple inputs)
+                      if isinstance(response['embedding'], list) and len(response['embedding']) > 0: 
+                          if isinstance(response['embedding'][0], list):
+                                # Multiple embeddings returned as list of lists
+                                return response['embedding']
+                          else:
+                                # Single embedding returned as list
+                                return [response['embedding']] # Wrap in a list
+                      else:
+                          raise RuntimeError("Gemini API embedding response format unexpected or empty.")
+                 else:
+                     raise RuntimeError("Gemini API embedding response format unexpected or missing 'embedding' key.")
             else:
-                # 使用Google GenerativeAI SDK直接处理
-                # 处理单个文本嵌入
-                async def get_embedding(text):
-                    embedding_model = await asyncio.to_thread(
-                        lambda: self.genai.GenerativeModel(model)
-                    )
-                    
-                    result = await asyncio.to_thread(
-                        lambda: embedding_model.embed_content(text)
-                    )
-                    
-                    return result.embedding
-                
-                # 并行处理多个文本
-                embeddings = await asyncio.gather(*[get_embedding(text) for text in texts])
-                return embeddings
+                 raise RuntimeError(f"{self.provider_name} client not properly configured or libraries missing.")
         except Exception as e:
-            raise self._format_exception(e)
-    
+            handle_llm_exception(e, self.provider_name)
+
     async def count_tokens(self, text: str, model: str = None) -> Dict[str, int]:
-        """计算文本的token数量
-        
-        Args:
-            text: 待计算的文本
-            model: 模型名称
-            
-        Returns:
-            Dict[str, int]: 包含token数量和字符数量的字典
-            
-        Raises:
-            LLMProviderException: 计算token异常
-        """
+        """计算文本的token数量"""
+        # Note: Gemini token counting is best done via the API for accuracy.
+        # Tiktoken is not officially supported and likely inaccurate for Gemini models.
+        self._ensure_client_ready()
+        target_model = model if model else "gemini-pro" # Need a model context
         try:
-            if not model:
-                model = "gemini-pro"
+            if self.use_langchain and self.chat_model_cls: 
+                 # Langchain Chat model instance can count tokens
+                 # Need to instantiate the model to call count_tokens
+                 # This is slightly inefficient if not already generating text
+                 chat_model = self.chat_model_cls(model=target_model, google_api_key=self.api_key)
+                 # Langchain's get_num_tokens is synchronous
+                 token_count = await run_sync_in_executor(chat_model.get_num_tokens, text)
+                 return {"token_count": token_count, "char_count": len(text)}
             
-            if self.use_langchain:
-                # 使用LangChain集成计算token
-                # 目前LangChain没有直接支持Google token计数，使用Google API
-                if hasattr(self, 'genai'):
-                    # 使用Google提供的CountTokens API
-                    model_instance = await asyncio.to_thread(
-                        lambda: self.genai.GenerativeModel(model)
-                    )
-                    
-                    token_count = await asyncio.to_thread(
-                        lambda: model_instance.count_tokens(text)
-                    )
-                    
-                    return {
-                        "token_count": token_count.total_tokens,
-                        "character_count": len(text)
-                    }
+            elif not self.use_langchain and self.genai:
+                # --- Google GenerativeAI SDK Implementation ---
+                model_instance = self.genai.GenerativeModel(target_model)
+                # count_tokens is synchronous
+                response = await run_sync_in_executor(model_instance.count_tokens, text)
+                
+                if response and hasattr(response, 'total_tokens'):
+                    return {"token_count": response.total_tokens, "char_count": len(text)}
                 else:
-                    # 如果没有Google API，使用tiktoken作为后备
-                    encoding = tiktoken.get_encoding("cl100k_base")
-                    tokens = encoding.encode(text)
-                    token_count = len(tokens)
-                    
-                    return {
-                        "token_count": token_count,
-                        "character_count": len(text)
-                    }
+                    raise RuntimeError("Gemini API count_tokens response format unexpected.")
             else:
-                # 使用Google提供的CountTokens API
-                model_instance = await asyncio.to_thread(
-                    lambda: self.genai.GenerativeModel(model)
-                )
-                
-                token_count = await asyncio.to_thread(
-                    lambda: model_instance.count_tokens(text)
-                )
-                
-                return {
-                    "token_count": token_count.total_tokens,
-                    "character_count": len(text)
-                }
+                 raise RuntimeError(f"{self.provider_name} client not properly configured or libraries missing.")
+
         except Exception as e:
-            # 如果API调用失败，使用近似计算
-            try:
-                # 对于英文为主的文本，使用cl100k_base作为后备
-                encoding = tiktoken.get_encoding("cl100k_base")
-                tokens = encoding.encode(text)
-                token_count = len(tokens)
-                
-                return {
-                    "token_count": token_count,
-                    "character_count": len(text)
-                }
-            except:
-                # 最简单的估算方法
-                return {
-                    "token_count": len(text) // 4,  # 粗略估计每个token约4个字符
-                    "character_count": len(text)
-                }
-    
+            # Handle API errors or if counting fails for the model
+            handle_llm_exception(e, f"{self.provider_name} (token counting)")
+
     async def stream_chat(self, prompt: str, context: List[Dict], model: str,
                        temperature: float = 0.7, max_tokens: int = 1000) -> AsyncGenerator[str, None]:
-        """流式生成聊天回复
-        
-        Args:
-            prompt: 提示文本
-            context: 上下文消息列表
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大生成令牌数
-            
-        Yields:
-            str: 生成的文本片段
-            
-        Raises:
-            LLMProviderException: Gemini API调用异常
-        """
+        """流式生成聊天回复"""
+        self._ensure_client_ready()
         try:
-            if self.use_langchain:
-                # 使用LangChain集成
+            if self.use_langchain and self.chat_model_cls:
+                # --- LangChain Implementation ---
                 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
                 
-                # 转换为LangChain消息
                 messages = []
                 for msg in context:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
-                    
-                    if role == "user":
-                        messages.append(HumanMessage(content=content))
-                    elif role == "assistant":
-                        messages.append(AIMessage(content=content))
-                    elif role == "system":
-                        messages.append(SystemMessage(content=content))
+                    if role == "user": messages.append(HumanMessage(content=content))
+                    elif role == "assistant": messages.append(AIMessage(content=content))
+                    elif role == "system": messages.append(SystemMessage(content=content))
+                if prompt: messages.append(HumanMessage(content=prompt))
                 
-                # 添加当前提示
-                if prompt:
-                    messages.append(HumanMessage(content=prompt))
-                
-                # 创建LangChain流式模型
                 chat_model = self.chat_model_cls(
                     model=model,
                     google_api_key=self.api_key,
                     temperature=temperature,
                     max_output_tokens=max_tokens,
-                    convert_system_message_to_human=True,  # Gemini不直接支持系统消息
-                    streaming=True
+                    convert_system_message_to_human=True,
+                    streaming=True # Ensure streaming is enabled
                 )
                 
-                # 调用流式响应
-                async for chunk in await asyncio.to_thread(chat_model.astream, messages):
-                    if hasattr(chunk, "content"):
-                        yield chunk.content
-                    elif isinstance(chunk, dict) and "content" in chunk:
-                        yield chunk["content"]
-                    else:
-                        yield str(chunk)
-            else:
-                # 使用Google GenerativeAI SDK
-                
-                # 转换为Gemini格式的聊天历史
+                # Langchain's astream should yield an async generator
+                async for chunk in chat_model.astream(messages):
+                    if hasattr(chunk, "content"): yield chunk.content
+                    elif isinstance(chunk, dict) and "content" in chunk: yield chunk["content"]
+                    elif isinstance(chunk, str): yield chunk
+                    # Ignore other potential chunk types
+
+            elif not self.use_langchain and self.genai:
+                # --- Google GenerativeAI SDK Implementation ---
                 gemini_history = []
-                user_msgs = []
-                
+                current_user_message_parts = []
+                last_role = None
                 for msg in context:
-                    role = msg.get("role", "")
+                    role = msg.get("role")
                     content = msg.get("content", "")
-                    
-                    if role == "system":
-                        # Gemini不支持系统消息，将其添加为用户消息
-                        user_msgs.append(content)
-                    elif role == "user":
-                        user_msgs.append(content)
-                    elif role == "assistant" and user_msgs:
-                        # 添加用户消息和助手回复作为一对
-                        gemini_history.append({
-                            "role": "user", 
-                            "parts": ["\n".join(user_msgs)]
-                        })
-                        user_msgs = []
-                        gemini_history.append({
-                            "role": "model",
-                            "parts": [content]
-                        })
+                    if not role or not content: continue
+                    if role == "user":
+                        if last_role == "user": current_user_message_parts.append(content)
+                        else: current_user_message_parts = [content]
+                    elif role == "assistant":
+                        if current_user_message_parts: 
+                            gemini_history.append({"role": "user", "parts": ["\n".join(current_user_message_parts)]})
+                            current_user_message_parts = []
+                        gemini_history.append({"role": "model", "parts": [content]})
+                    last_role = role
+                if prompt:
+                     if last_role == "user": current_user_message_parts.append(prompt)
+                     else: current_user_message_parts = [prompt]
+                final_user_msg = ""
+                if current_user_message_parts:
+                    final_user_msg = "\n".join(current_user_message_parts)
+
+                generation_config = self.genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens
+                )
+                model_instance = self.genai.GenerativeModel(model)
                 
-                # 添加最后的用户消息
-                if user_msgs or prompt:
-                    final_user_msg = "\n".join(user_msgs + ([prompt] if prompt else []))
-                    if final_user_msg:
-                        if gemini_history:
-                            gemini_history.append({"role": "user", "parts": [final_user_msg]})
-                        else:
-                            # 如果没有历史，直接使用提示
-                            final_prompt = final_user_msg
+                # Get the synchronous stream iterator using run_sync_in_executor
+                if gemini_history:
+                    chat = await run_sync_in_executor(model_instance.start_chat, history=gemini_history)
+                    response_iter = await run_sync_in_executor(
+                        chat.send_message,
+                        final_user_msg,
+                        generation_config=generation_config,
+                        stream=True
+                    )
+                else:
+                     response_iter = await run_sync_in_executor(
+                         model_instance.generate_content, 
+                         final_user_msg, 
+                         generation_config=generation_config,
+                         stream=True
+                     )
                 
-                # 使用异步生成器包装流式响应
-                async def stream_response():
+                # Asynchronously iterate over the synchronous iterator
+                iter_ended = False
+                while not iter_ended:
                     try:
-                        # 使用Gemini Chat API
-                        if gemini_history:
-                            # 使用聊天历史
-                            chat = await asyncio.to_thread(
-                                lambda: self.genai.GenerativeModel(model).start_chat(history=gemini_history)
-                            )
-                            
-                            response_iter = await asyncio.to_thread(
-                                lambda: chat.send_message(
-                                    "",  # 空消息，因为最后的用户消息已经在历史中
-                                    generation_config={
-                                        "temperature": temperature,
-                                        "max_output_tokens": max_tokens,
-                                    },
-                                    stream=True
-                                )
-                            )
-                        else:
-                            # 没有历史，直接使用提示
-                            model_instance = await asyncio.to_thread(
-                                lambda: self.genai.GenerativeModel(model)
-                            )
-                            
-                            response_iter = await asyncio.to_thread(
-                                lambda: model_instance.generate_content(
-                                    prompt,
-                                    generation_config={
-                                        "temperature": temperature,
-                                        "max_output_tokens": max_tokens,
-                                    },
-                                    stream=True
-                                )
-                            )
-                        
-                        # 处理流式响应
-                        for chunk in response_iter:
-                            if chunk.text:
-                                yield chunk.text
-                    except Exception as e:
-                        raise self._format_exception(e)
-                
-                # 返回异步生成器
-                async for chunk in stream_response():
-                    yield chunk
+                        # Get next chunk in executor
+                        chunk = await run_sync_in_executor(next, response_iter)
+                        if chunk and hasattr(chunk, 'text') and chunk.text:
+                            yield chunk.text
+                    except StopIteration:
+                        iter_ended = True
+                    except Exception as inner_e:
+                        # Handle errors during iteration
+                        handle_llm_exception(inner_e, self.provider_name)
+                        iter_ended = True # Stop iteration on error
+            else:
+                raise RuntimeError(f"{self.provider_name} client not properly configured or libraries missing.")
+
         except Exception as e:
-            raise self._format_exception(e)
+            handle_llm_exception(e, self.provider_name)
             
     def _get_model_defaults(self, model: str, task_type: str = "chat") -> Dict[str, Any]:
-        """获取模型默认参数
-        
-        Args:
-            model: 模型名称
-            task_type: 任务类型
-            
-        Returns:
-            Dict[str, Any]: 模型默认参数
-        """
+        """获取模型默认参数 (保持不变)"""
         if task_type == "embedding":
+            # Default embedding size (output dimension) - max_tokens isn't applicable here
+            # Input max tokens depend on the model, e.g., 2048 for embedding-001
             return {
-                "max_tokens": 768,  # Gemini嵌入向量大小
+                 # "max_input_tokens": 2048, # Informational
             }
         
-        # Gemini模型默认参数
-        if "gemini-ultra" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 4000,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
-        elif "gemini-pro" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 2048,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
-        elif "gemini-" in model:
-            return {
-                "temperature": 0.7,
-                "max_tokens": 1024,
-                "top_p": 1.0,
-                "frequency_penalty": 0.0,
-                "presence_penalty": 0.0
-            }
+        defaults = {
+            "temperature": 0.7,
+            "top_p": 1.0,
+            "frequency_penalty": 0.0, # Not directly supported by Gemini API
+            "presence_penalty": 0.0   # Not directly supported by Gemini API
+        }
+        
+        # Max output tokens defaults based on common Gemini models
+        if "gemini-1.5" in model or "gemini-ultra" in model: # Ultra / 1.5 Flash/Pro
+            defaults["max_tokens"] = 8192 # Check specific model docs, 1.5 can be much higher
+        elif "gemini-1.0-pro" in model or "gemini-pro" in model: # 1.0 Pro
+            defaults["max_tokens"] = 2048 # Or 8192 for gemini-1.0-pro-002
         else:
-            return super()._get_model_defaults(model, task_type)
+             # Generic fallback
+             defaults["max_tokens"] = 1024
+        
+        # Gemini API might have different param names or concepts (e.g., top_k)
+        # Adjust if necessary based on specific API usage
+        # Example: adding top_k if used directly via SDK
+        # defaults["top_k"] = 40 
+
+        return defaults

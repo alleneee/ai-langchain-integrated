@@ -13,6 +13,8 @@ from src.core.exceptions import (
     LLMProviderModelNotFoundException
 )
 import asyncio
+from src.utils.llm_exception_utils import handle_llm_exception
+from src.utils.async_utils import run_sync_in_executor
 
 class XAIProvider(BaseLLMProvider):
     """XAI API适配器"""
@@ -91,14 +93,11 @@ class XAIProvider(BaseLLMProvider):
                 max_tokens=max_tokens
             )
             
-            # 调用模型
-            response = await asyncio.to_thread(chat_model.invoke, messages)
-            
-            # 提取响应内容
-            if hasattr(response, "content"):
+            async def _generate():
+                response = await chat_model.invoke(messages)
                 return response.content
-            else:
-                return str(response)
+
+            return await handle_llm_exception(_generate)
         except Exception as e:
             raise self._format_exception(e)
     
@@ -128,9 +127,10 @@ class XAIProvider(BaseLLMProvider):
                 xai_api_base=self.api_base if self.api_base else None
             )
             
-            # 使用LangChain嵌入
-            embeddings = await asyncio.to_thread(embedding_model.embed_documents, texts)
-            return embeddings
+            async def _embed():
+                return await embedding_model.embed_documents(texts)
+
+            return await handle_llm_exception(_embed)
         except Exception as e:
             raise self._format_exception(e)
     

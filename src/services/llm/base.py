@@ -129,36 +129,6 @@ class BaseLLMProvider(LLMProviderInterface):
             "presence_penalty": 0.0
         }
     
-    def _format_exception(self, exc: Exception) -> Exception:
-        """格式化异常，将第三方SDK异常转换为应用定义的异常
-        
-        Args:
-            exc: 原始异常
-            
-        Returns:
-            Exception: 格式化后的异常
-        """
-        error_msg = str(exc)
-        
-        # 认证错误处理
-        if any(keyword in error_msg.lower() for keyword in ["authentication", "auth", "key", "unauthorized", "权限", "认证"]):
-            return LLMProviderAuthException(f"{self.provider_name} 认证失败: {error_msg}")
-        
-        # 配额错误处理
-        if any(keyword in error_msg.lower() for keyword in ["quota", "billing", "payment", "支付", "账单", "配额"]):
-            return LLMProviderQuotaException(f"{self.provider_name} 配额已用尽: {error_msg}")
-        
-        # 速率限制处理
-        if any(keyword in error_msg.lower() for keyword in ["rate limit", "too many", "ratelimit", "速率", "频率"]):
-            return LLMProviderRateLimitException(f"{self.provider_name} 请求频率过高: {error_msg}")
-        
-        # 模型不存在处理
-        if any(keyword in error_msg.lower() for keyword in ["model not found", "model doesn't exist", "模型不存在"]):
-            return LLMProviderModelNotFoundException(f"{self.provider_name} 模型不存在: {error_msg}")
-        
-        # 默认返回通用LLM异常
-        return LLMProviderException(f"{self.provider_name} 调用失败: {error_msg}")
-    
     def _prepare_messages(self, context: List[Dict], prompt: str = None) -> List[Dict[str, str]]:
         """将上下文和提示转换为标准消息格式
         
