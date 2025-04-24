@@ -1,7 +1,7 @@
 """
 LLM提供商工厂模块
 
-该模块负责创建和管理不同的LLM提供商实例。
+该模块负责创建和管理不同的LLM提供商实例，支持连接池管理。
 """
 
 import importlib
@@ -11,11 +11,12 @@ from src.core.interfaces import FactoryInterface
 from src.core.exceptions import FactoryException, ConfigurationException
 from src.services.llm.base import BaseLLMProvider
 from src.config.settings import settings
+from src.core.connection_pool import ConnectionPoolManager
 
 logger = logging.getLogger(__name__)
 
 class LLMProviderFactory(FactoryInterface):
-    """LLM提供商工厂类"""
+    """LLM提供商工厂类，支持连接池"""
     
     # 提供商类映射
     PROVIDER_MAPPING = {
@@ -46,6 +47,7 @@ class LLMProviderFactory(FactoryInterface):
     def __init__(self):
         """初始化LLM提供商工厂"""
         self.provider_instances = {}  # 缓存已创建的提供商实例
+        self.initialized = False
         
         # 预配置的提供商配置
         self.provider_configs = {
@@ -88,6 +90,57 @@ class LLMProviderFactory(FactoryInterface):
             },
         }
     
+    async def initialize(self):
+        """初始化工厂，确保连接池可用
+        
+        Returns:
+            None
+            
+        Raises:
+            FactoryException: 初始化失败
+        """
+        if self.initialized:
+            return
+        
+        try:
+            # 获取连接池管理器，确保已初始化
+            self.pool_manager = ConnectionPoolManager.get_instance()
+            await self.pool_manager.initialize(settings)
+            
+            # 预初始化默认提供商
+            default_provider = settings.DEFAULT_LLM_PROVIDER
+            if default_provider:
+                try:
+                    await self.create(default_provider)
+                    logger.info(f"默认提供商 {default_provider} 已预初始化")
+                except Exception as e:
+                    logger.warning(f"预初始化默认提供商 {default_provider} 失败: {str(e)}")
+            
+            self.initialized = True
+            logger.info("LLM提供商工厂初始化完成")
+        except Exception as e:
+            logger.error(f"LLM提供商工厂初始化失败: {str(e)}")
+            raise FactoryException(f"初始化失败: {str(e)}")
+    
+    async def close(self):
+        """关闭工厂和相关资源
+        
+        Returns:
+            None
+        """
+        # 关闭所有提供商实例
+        for provider_instance in self.provider_instances.values():
+            if hasattr(provider_instance, 'close') and callable(provider_instance.close):
+                try:
+                    await provider_instance.close()
+                except Exception as e:
+                    logger.warning(f"关闭提供商实例时出错: {str(e)}")
+        
+        # 清空实例缓存
+        self.provider_instances.clear()
+        self.initialized = False
+        logger.info("LLM提供商工厂已关闭")
+    
     async def create(self, provider_name: str, **kwargs) -> BaseLLMProvider:
         """创建LLM提供商实例
         
@@ -125,6 +178,14 @@ class LLMProviderFactory(FactoryInterface):
             
             # 使用传递的参数覆盖默认配置
             config.update(kwargs)
+            
+            # 如果未提供http_session，添加连接池的HTTP会话
+            if 'http_session' not in config:
+                if not hasattr(self, 'pool_manager'):
+                    self.pool_manager = ConnectionPoolManager.get_instance()
+                    await self.pool_manager.initialize(settings)
+                
+                config['http_session'] = self.pool_manager.get_http_session("llm")
             
             # 动态导入提供商类
             provider_class_path = self.PROVIDER_MAPPING[provider_name]

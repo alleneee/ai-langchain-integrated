@@ -19,12 +19,14 @@ dify-connect/
 │   └── utils/                  # 工具函数
 ├── scripts/                    # 脚本文件
 │   ├── celery_worker.py        # Celery Worker 启动脚本
-│   └── celery_flower.py        # Celery Flower 监控脚本
+│   ├── celery_flower.py        # Celery Flower 监控脚本
+│   └── migrate_to_pydantic_v2.py # Pydantic v1 到 v2 迁移脚本
 ├── docker/                     # Docker 相关文件
 │   └── docker-compose-celery.yml # Celery Docker Compose 配置
 ├── docs/                       # 文档
 │   ├── celery-integration.md   # Celery 集成文档
-│   └── document-formats.md     # 文档格式支持文档
+│   ├── document-formats.md     # 文档格式支持文档
+│   └── langchain_0_3_migration.md # LangChain 0.3 迁移指南
 ├── examples/                   # 使用示例
 ├── tests/                      # 测试代码
 ├── requirements.txt            # 依赖包列表
@@ -38,6 +40,7 @@ dify-connect/
 - [快速启动指南](docs/quick-start.md) - 如何使用一键启动脚本启动项目
 - [Celery 集成文档](docs/celery-integration.md) - 如何使用 Celery 实现异步文档处理
 - [文档格式支持文档](docs/document-formats.md) - 支持的文档格式和使用方法
+- [LangChain 0.3 迁移指南](docs/langchain_0_3_migration.md) - 如何升级到 LangChain 0.3 版本
 
 ### 安装依赖
 
@@ -69,6 +72,23 @@ pip install -r requirements.txt
 ```
 
 更多详细信息，请参考[快速启动指南](docs/quick-start.md)。
+
+### LangChain 0.3 更新
+
+本项目已升级至 LangChain 0.3。主要变更包括：
+
+- 全面升级到 Pydantic 2，不再支持 Pydantic 1
+- 更新了集成包的导入路径，如 langchain-openai、langchain-google-genai 等
+- 不再支持 Python 3.8
+
+如需迁移现有代码，请使用迁移脚本：
+
+```bash
+python scripts/migrate_to_pydantic_v2.py src/ --dry-run  # 预览更改
+python scripts/migrate_to_pydantic_v2.py src/            # 应用更改
+```
+
+详细迁移指南请参考[LangChain 0.3 迁移指南](docs/langchain_0_3_migration.md)。
 
 ### 配置
 

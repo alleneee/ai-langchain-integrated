@@ -1,7 +1,7 @@
 """
 LangChain Google Gemini 集成模块
 
-这个模块提供了与 langchain-google-community 库的集成，允许使用 Google Gemini 模型作为 LangChain 中的 LLM。
+这个模块提供了与 langchain-google-genai 库的集成，允许使用 Google Gemini 模型作为 LangChain 中的 LLM。
 """
 
 import logging
@@ -33,7 +33,7 @@ class GeminiIntegration(BaseLangChainIntegration):
         """
         try:
             # 导入 Google Gemini LangChain 集成
-            from langchain_google_community import ChatGoogleGenerativeAI
+            from langchain_google_genai import ChatGoogleGenerativeAI
             
             # 提取配置
             api_key = config.get("api_key", "")
@@ -52,8 +52,8 @@ class GeminiIntegration(BaseLangChainIntegration):
                 convert_system_message_to_human=True  # Gemini不直接支持系统消息，需要将其转换为人类消息
             )
         except ImportError:
-            logger.error("未安装 langchain-google-community 库。请使用 pip install langchain-google-community 安装")
-            raise ImportError("未安装 langchain-google-community 库")
+            logger.error("未安装 langchain-google-genai 库。请使用 pip install langchain-google-genai>=2.0.0 安装")
+            raise ImportError("未安装 langchain-google-genai 库")
     
     @staticmethod
     def get_embedding_model(config: Dict[str, Any]):
@@ -70,7 +70,7 @@ class GeminiIntegration(BaseLangChainIntegration):
         """
         try:
             # 导入 Google Embeddings
-            from langchain_google_community import GoogleGenerativeAIEmbeddings
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
             
             # 提取配置
             api_key = config.get("api_key", "")
@@ -82,8 +82,8 @@ class GeminiIntegration(BaseLangChainIntegration):
                 google_api_key=api_key
             )
         except ImportError:
-            logger.error("未安装 langchain-google-community 库。请使用 pip install langchain-google-community 安装")
-            raise ImportError("未安装 langchain-google-community 库")
+            logger.error("未安装 langchain-google-genai 库。请使用 pip install langchain-google-genai>=2.0.0 安装")
+            raise ImportError("未安装 langchain-google-genai 库")
     
     @staticmethod
     def get_default_chat_model_name() -> str:
@@ -115,6 +115,8 @@ class GeminiIntegration(BaseLangChainIntegration):
         """
         return [
             "gemini-pro",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
             "gemini-ultra",
             "gemini-pro-vision",
             "gemini-ultra-vision"
@@ -129,5 +131,6 @@ class GeminiIntegration(BaseLangChainIntegration):
             List[str]: 可用嵌入模型列表
         """
         return [
-            "embedding-001"
+            "embedding-001",
+            "text-embedding-004"
         ]

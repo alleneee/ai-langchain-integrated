@@ -76,7 +76,7 @@ try:
     from pydantic import BaseModel
 except ImportError:
     # 回退到 Pydantic v1 兼容层
-    from pydantic.v1 import BaseModel
+    from pydantic import BaseModel
 # 尝试导入其他解析器
 try:
     from langchain.output_parsers import (

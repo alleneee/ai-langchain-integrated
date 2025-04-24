@@ -4,10 +4,11 @@ LLM Interaction Strategies for OpenAI Provider.
 
 import os
 import tiktoken # OpenAI's tokenizer
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Callable
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.tools import BaseTool
 
 from src.services.llm.base import LLMStrategy
 from src.utils.llm_exception_utils import handle_llm_exception
@@ -39,8 +40,8 @@ class OpenAILangchainStrategy(LLMStrategy):
         """Helper to create a ChatOpenAI client."""
         return ChatOpenAI(
             model=model or _DEFAULT_OPENAI_CHAT_MODEL,
-            openai_api_key=self.api_key,
-            openai_api_base=self.base_url,
+            api_key=self.api_key,  # 更新为新的参数名
+            base_url=self.base_url,  # 更新为新的参数名
             temperature=temperature,
             max_tokens=max_tokens,
             **(self.extra_kwargs.get("chat_options", {}))
@@ -51,8 +52,8 @@ class OpenAILangchainStrategy(LLMStrategy):
         embedding_model_name = model or _DEFAULT_OPENAI_EMBEDDING_MODEL
         return OpenAIEmbeddings(
             model=embedding_model_name,
-            openai_api_key=self.api_key,
-            openai_api_base=self.base_url,
+            api_key=self.api_key,  # 更新为新的参数名
+            base_url=self.base_url,  # 更新为新的参数名
             **(self.extra_kwargs.get("embedding_options", {}))
         )
 
@@ -62,13 +63,27 @@ class OpenAILangchainStrategy(LLMStrategy):
         for msg in context:
             role = msg.get("role", "user").lower()
             content = msg.get("content", "")
+            
+            # 处理可能包含的工具调用响应
+            tool_calls = msg.get("tool_calls", [])
+            tool_call_id = msg.get("tool_call_id")
+            
             if content:
                 if role == "user":
                     messages.append(HumanMessage(content=content))
                 elif role == "assistant" or role == "ai":
-                    messages.append(AIMessage(content=content))
+                    # 处理可能的工具调用
+                    if tool_calls:
+                        # 创建带有工具调用的AI消息
+                        messages.append(AIMessage(content=content, tool_calls=tool_calls))
+                    else:
+                        messages.append(AIMessage(content=content))
                 elif role == "system":
                     messages.append(SystemMessage(content=content))
+                elif role == "tool" and tool_call_id:
+                    # 添加工具消息支持
+                    messages.append(ToolMessage(content=content, tool_call_id=tool_call_id))
+                    
         if prompt:
             messages.append(HumanMessage(content=prompt))
         return messages
@@ -104,6 +119,24 @@ class OpenAILangchainStrategy(LLMStrategy):
         async for chunk in llm.astream(messages, **kwargs):
             if chunk.content:
                  yield chunk.content
+                 
+    @handle_llm_exception
+    async def chat_with_tools(self, prompt: str, context: List[Dict], tools: List[BaseTool], 
+                           model: str, temperature: float, max_tokens: int, **kwargs) -> Dict[str, Any]:
+        """使用工具进行聊天，符合LangChain最新工具调用模式。"""
+        llm = self._create_chat_client(model, temperature, max_tokens)
+        messages = self._prepare_langchain_messages(context, prompt)
+        
+        # 绑定工具到模型
+        llm_with_tools = llm.bind_tools(tools)
+        
+        # 调用模型生成响应
+        response = await llm_with_tools.ainvoke(messages, **kwargs)
+        
+        return {
+            "content": response.content,
+            "tool_calls": getattr(response, "tool_calls", None)
+        }
 
     def get_models(self) -> List[str]:
         """Returns a static list of common OpenAI models."""

@@ -14,9 +14,9 @@ import os
 from typing import Dict, Any, List, Optional, Tuple, Union
 import tiktoken
 
-from langchain.chains import ConversationChain
-from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
-from langchain.schema.language_model import BaseLanguageModel
+from langchain_core.chains import ConversationChain
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage, ToolMessage
+from langchain_core.language_models import BaseLanguageModel
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.retrievers import BaseRetriever
@@ -360,90 +360,145 @@ class LangChainService(BaseService):
         """
         return PromptFactory.create_chat_message(type, content, **kwargs)
     
-    @staticmethod
     def create_retrieval_chain(
-        llm: BaseChatModel,
+        self,
+        llm: BaseLanguageModel,
         retriever: BaseRetriever,
-        system_message: Optional[str] = None
-    ) -> Any:
+        prompt_template: Optional[str] = None,
+        include_sources: bool = False,
+        **kwargs
+    ):
         """
         创建检索增强生成链
         
         Args:
             llm: 语言模型
             retriever: 检索器
-            system_message: 系统消息
+            prompt_template: 可选的自定义提示模板
+            include_sources: 是否在输出中包含来源文档信息
+            **kwargs: 其他参数
             
         Returns:
             检索链
         """
-        # 构建提示模板
-        if system_message:
-            prompt_config = {
-                "messages": [
-                    {"type": "system", "content": system_message},
-                    {"type": "system", "content": "根据以下内容回答用户问题: \n\n{context}"},
-                    {"type": "human", "content": "{question}"}
-                ]
-            }
+        # 使用默认或自定义提示模板
+        if prompt_template:
+            prompt = ChatPromptTemplate.from_template(prompt_template)
         else:
-            prompt_config = {
-                "messages": [
-                    {"type": "system", "content": "根据以下内容回答用户问题: \n\n{context}"},
-                    {"type": "human", "content": "{question}"}
-                ]
-            }
+            # 使用更新后的提示模板格式
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "你是一个有帮助的助手，使用以下上下文来回答用户的问题。"
+                          "如果你在上下文中找不到答案，请说你不知道，不要编造信息。\n\n"
+                          "上下文：\n{context}"),
+                ("human", "{question}")
+            ])
         
-        prompt = PromptFactory.create_from_config("chat", prompt_config)
-        
-        # 构建检索链
-        chain = (
-            {"context": retriever, "question": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
-        
-        return chain
-    
-    def _convert_to_langchain_messages(self, messages: List[Dict[str, Any]]) -> List[BaseMessage]:
+        # 使用新的链构建方式
+        if include_sources:
+            # 创建包含文档来源的链
+            from operator import itemgetter
+            from langchain_core.output_parsers import StrOutputParser
+            
+            def format_docs(docs):
+                return "\n\n".join(f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs))
+                
+            # 创建包含来源的输出格式化逻辑
+            def combine_documents_and_response(inputs):
+                docs = inputs["documents"]
+                response = inputs["response"]
+                sources = []
+                for doc in docs:
+                    if hasattr(doc, "metadata") and doc.metadata:
+                        source = doc.metadata.get("source", "未知来源")
+                        sources.append(source)
+                unique_sources = list(set(sources))
+                formatted_sources = "\n".join([f"- {src}" for src in unique_sources])
+                
+                return f"{response}\n\n来源：\n{formatted_sources}"
+                
+            # 构建新版RAG链
+            retrieval_chain = (
+                {"context": retriever | format_docs, "question": RunnablePassthrough()}
+                | prompt
+                | llm
+                | StrOutputParser()
+            )
+            
+            # 添加源文档信息
+            source_chain = (
+                {"documents": retriever, "response": retrieval_chain}
+                | combine_documents_and_response
+            )
+            
+            return source_chain
+        else:
+            # 创建标准RAG链
+            from langchain_core.output_parsers import StrOutputParser
+            from langchain_core.runnables import RunnablePassthrough
+            
+            def format_docs(docs):
+                return "\n\n".join(f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs))
+                
+            # 构建新版RAG链
+            retrieval_chain = (
+                {"context": retriever | format_docs, "question": RunnablePassthrough()}
+                | prompt
+                | llm
+                | StrOutputParser()
+            )
+            
+            return retrieval_chain
+            
+    def _convert_to_langchain_messages(self, messages: List[Dict]) -> List[BaseMessage]:
         """
-        将消息列表转换为LangChain消息格式
+        将消息字典列表转换为LangChain消息对象列表
         
         Args:
-            messages: 消息列表，每个消息包含role和content字段
+            messages: 消息字典列表，每个消息包含role和content
             
         Returns:
-            List[BaseMessage]: LangChain消息列表
+            List[BaseMessage]: LangChain消息对象列表
         """
         lc_messages = []
-        
         for message in messages:
-            role = message.get("role", "").lower()
+            role = message.get("role", "user").lower()
             content = message.get("content", "")
             
-            if role == "user":
-                lc_messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                lc_messages.append(AIMessage(content=content))
-            elif role == "system":
-                lc_messages.append(SystemMessage(content=content))
-                
+            # 处理可能的工具调用内容
+            tool_calls = message.get("tool_calls", [])
+            tool_call_id = message.get("tool_call_id")
+            
+            if content:
+                if role == "user":
+                    lc_messages.append(HumanMessage(content=content))
+                elif role == "assistant" or role == "ai":
+                    # 处理可能的工具调用
+                    if tool_calls:
+                        # 创建带有工具调用的AI消息
+                        lc_messages.append(AIMessage(content=content, tool_calls=tool_calls))
+                    else:
+                        lc_messages.append(AIMessage(content=content))
+                elif role == "system":
+                    lc_messages.append(SystemMessage(content=content))
+                elif role == "tool" and tool_call_id:
+                    # 添加工具消息支持
+                    lc_messages.append(ToolMessage(content=content, tool_call_id=tool_call_id))
+                    
         return lc_messages
     
     def process_chat(
         self,
         model: BaseChatModel,
-        messages: List[Dict[str, Any]],
+        messages: List[Dict],
         system_message: Optional[str] = None
     ) -> Tuple[str, Dict[str, int]]:
         """
-        处理聊天请求
+        处理聊天消息并生成回复
         
         Args:
-            model: 语言模型
+            model: LangChain聊天模型
             messages: 消息列表
-            system_message: 系统消息
+            system_message: 可选的系统消息
             
         Returns:
             Tuple[str, Dict[str, int]]: 回复内容和token使用信息
@@ -479,7 +534,62 @@ class LangChainService(BaseService):
         }
         
         return content, usage
-    
+
+    async def process_chat_with_tools(
+        self,
+        model: BaseChatModel,
+        messages: List[Dict],
+        tools: List,
+        system_message: Optional[str] = None
+    ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+        """
+        处理带工具的聊天消息并生成回复
+        
+        Args:
+            model: LangChain聊天模型
+            messages: 消息列表
+            tools: 工具列表
+            system_message: 可选的系统消息
+            
+        Returns:
+            Tuple[Dict[str, Any], Dict[str, int]]: 回复内容（包括可能的工具调用）和token使用信息
+        """
+        # 转换消息格式
+        lc_messages = self._convert_to_langchain_messages(messages)
+        
+        # 如果提供了系统消息，则添加到消息列表开头
+        if system_message and not any(isinstance(msg, SystemMessage) for msg in lc_messages):
+            lc_messages.insert(0, SystemMessage(content=system_message))
+        
+        # 绑定工具到模型
+        model_with_tools = model.bind_tools(tools)
+        
+        # 调用模型生成回复
+        response = model_with_tools.invoke(lc_messages)
+        
+        # 提取内容和工具调用
+        content = response.content if hasattr(response, "content") else str(response)
+        tool_calls = getattr(response, "tool_calls", None)
+        
+        # 计算token使用情况
+        input_text = system_message or ""
+        for message in messages:
+            input_text += message.get("content", "") + "\n"
+            
+        input_tokens = len(self._encoding.encode(input_text))
+        output_tokens = len(self._encoding.encode(content))
+        
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
+        
+        return {
+            "content": content,
+            "tool_calls": tool_calls
+        }, usage
+
     async def process_documents(
         self,
         documents: List[Document],
