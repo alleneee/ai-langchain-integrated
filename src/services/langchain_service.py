@@ -11,7 +11,7 @@ LangChain服务模块
 
 import logging
 import os
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple, Union, Callable, Type, TypeVar, Generic, cast
 import tiktoken
 
 from langchain_core.chains import ConversationChain
@@ -23,7 +23,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.vectorstores import VectorStore
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, Runnable, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from src.services.base import BaseService
@@ -44,6 +44,7 @@ from src.factories import (
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar('T')  # 定义泛型类型变量
 
 class LangChainService(BaseService):
     """LangChain服务类，提供与LangChain库的集成"""
@@ -53,7 +54,7 @@ class LangChainService(BaseService):
         super().__init__()
         self._encoding = tiktoken.get_encoding("cl100k_base")
         
-    async def initialize(self):
+    async def initialize(self) -> None:
         """初始化服务"""
         # 这里可以进行必要的初始化操作
         pass
@@ -367,7 +368,7 @@ class LangChainService(BaseService):
         prompt_template: Optional[str] = None,
         include_sources: bool = False,
         **kwargs
-    ):
+    ) -> Runnable:
         """
         创建检索增强生成链
         
@@ -379,7 +380,7 @@ class LangChainService(BaseService):
             **kwargs: 其他参数
             
         Returns:
-            检索链
+            Runnable: 检索链
         """
         # 使用默认或自定义提示模板
         if prompt_template:
@@ -392,51 +393,30 @@ class LangChainService(BaseService):
                           "上下文：\n{context}"),
                 ("human", "{question}")
             ])
-        
-        # 使用新的链构建方式
+
+        # 如果需要包含来源
         if include_sources:
-            # 创建包含文档来源的链
-            from operator import itemgetter
-            from langchain_core.output_parsers import StrOutputParser
-            
-            def format_docs(docs):
-                return "\n\n".join(f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs))
+            # 创建包含来源信息的格式化器
+            def format_docs_with_sources(docs: List[Document]) -> str:
+                formatted_docs = []
+                for i, doc in enumerate(docs):
+                    source = doc.metadata.get("source", f"来源 {i+1}")
+                    formatted_docs.append(f"来源[{i+1}]: {source}\n内容: {doc.page_content}")
+                return "\n\n".join(formatted_docs)
                 
-            # 创建包含来源的输出格式化逻辑
-            def combine_documents_and_response(inputs):
-                docs = inputs["documents"]
-                response = inputs["response"]
-                sources = []
-                for doc in docs:
-                    if hasattr(doc, "metadata") and doc.metadata:
-                        source = doc.metadata.get("source", "未知来源")
-                        sources.append(source)
-                unique_sources = list(set(sources))
-                formatted_sources = "\n".join([f"- {src}" for src in unique_sources])
-                
-                return f"{response}\n\n来源：\n{formatted_sources}"
-                
-            # 构建新版RAG链
+            # 构建包含来源的链
             retrieval_chain = (
-                {"context": retriever | format_docs, "question": RunnablePassthrough()}
+                {"context": retriever | format_docs_with_sources, "question": RunnablePassthrough()}
                 | prompt
                 | llm
                 | StrOutputParser()
             )
             
-            # 添加源文档信息
-            source_chain = (
-                {"documents": retriever, "response": retrieval_chain}
-                | combine_documents_and_response
-            )
-            
-            return source_chain
+            return retrieval_chain
+        
         else:
             # 创建标准RAG链
-            from langchain_core.output_parsers import StrOutputParser
-            from langchain_core.runnables import RunnablePassthrough
-            
-            def format_docs(docs):
+            def format_docs(docs: List[Document]) -> str:
                 return "\n\n".join(f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs))
                 
             # 构建新版RAG链

@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Dict, Any, List, Optional
 
-from langchain.vectorstores.base import VectorStore
+from langchain_core.vectorstores import VectorStore
 from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma, FAISS
 from langchain_community.vectorstores.pgvector import PGVector

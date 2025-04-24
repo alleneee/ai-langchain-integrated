@@ -54,8 +54,8 @@ class DeepseekLangchainStrategy(LLMStrategy):
         embedding_model_name = model or _DEFAULT_DEEPSEEK_EMBEDDING_MODEL
         return OpenAIEmbeddings(
             model=embedding_model_name,
-            openai_api_key=openai_api_key, # Use OpenAI key if hitting OpenAI endpoint
-            openai_api_base=openai_base_url,
+            api_key=openai_api_key, # Use OpenAI key if hitting OpenAI endpoint
+            base_url=openai_base_url,
             **(self.extra_kwargs.get("embedding_options", {}))
         )
 

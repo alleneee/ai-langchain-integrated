@@ -43,8 +43,8 @@ class QwenLangchainStrategy(LLMStrategy):
         # Assuming Qwen provides an OpenAI-compatible endpoint for chat
         return ChatOpenAI(
             model=model or _DEFAULT_QWEN_CHAT_MODEL,
-            openai_api_key=self.api_key,
-            openai_api_base=self.base_url, # Use compatible base URL
+            api_key=self.api_key,
+            base_url=self.base_url, # Use compatible base URL
             temperature=temperature,
             max_tokens=max_tokens, # Note: Qwen might handle max_tokens differently
             **(self.extra_kwargs.get("chat_options", {}))

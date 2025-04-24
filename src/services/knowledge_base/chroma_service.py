@@ -259,7 +259,7 @@ if __name__ == '__main__':
         # exit()
         # 或者，在没有 OpenAI 的情况下使用虚拟/替代嵌入进行测试：
         print("警告: 未设置 OPENAI_API_KEY。查询可能会失败或使用虚拟嵌入。")
-        # from langchain.embeddings import FakeEmbeddings
+        # from langchain_community.embeddings import FakeEmbeddings
         # kb = ChromaKnowledgeBase(persist_directory="./my_knowledge_db", embedding_function=FakeEmbeddings(size=768))
         kb = ChromaKnowledgeBase(persist_directory=DEFAULT_CHROMA_PATH) # 将使用 OpenAI，如果密钥缺失，稍后可能会出错
     else:

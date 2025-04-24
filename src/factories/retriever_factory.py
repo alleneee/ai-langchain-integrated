@@ -10,14 +10,14 @@ from typing import Dict, Any, List, Optional, Union
 from langchain_core.vectorstores import VectorStore
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
-from langchain.retrievers import (
+from langchain_community.retrievers import (
     ContextualCompressionRetriever,
     MultiQueryRetriever,
     TimeWeightedVectorStoreRetriever,
     ParentDocumentRetriever,
     SelfQueryRetriever
 )
-from langchain.retrievers.document_compressors import (
+from langchain_community.retrievers.document_compressors import (
     DocumentCompressorPipeline,
     EmbeddingsFilter,
     LLMChainFilter

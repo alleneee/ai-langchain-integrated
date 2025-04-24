@@ -37,11 +37,11 @@ class OpenAILangchainStrategy(LLMStrategy):
             self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def _create_chat_client(self, model: str, temperature: float, max_tokens: int) -> ChatOpenAI:
-        """Helper to create a ChatOpenAI client."""
+        """Create a ChatOpenAI client with configured parameters."""
         return ChatOpenAI(
             model=model or _DEFAULT_OPENAI_CHAT_MODEL,
-            api_key=self.api_key,  # 更新为新的参数名
-            base_url=self.base_url,  # 更新为新的参数名
+            api_key=self.api_key,
+            base_url=self.base_url if self.base_url else None,
             temperature=temperature,
             max_tokens=max_tokens,
             **(self.extra_kwargs.get("chat_options", {}))

@@ -79,7 +79,7 @@ except ImportError:
     from pydantic import BaseModel
 # 尝试导入其他解析器
 try:
-    from langchain.output_parsers import (
+    from langchain_community.output_parsers import (
         ResponseSchema,
         StructuredOutputParser,
         XMLOutputParser
